@@ -34,6 +34,7 @@ class SNMPCIDRScanner {
 	oids: IOIDs;
 	communityStr: string;
 	port: number;
+  timeout: number;
 
 	constructor(CIDR: string, port?: number, bufferSize?: number, communityStr?: string) {
 		if (!IPCIDR.isValidCIDR(CIDR)) {
@@ -48,6 +49,7 @@ class SNMPCIDRScanner {
 			interfaces: '1.3.6.1.2.1.2.2',
 		};
 		this.port = port ?? 161;
+    this.timeout = 2000;
 		this.bufferSize = bufferSize ?? 25;
 		this.IPTotal = 0;
 		this.IPFound = [];
@@ -153,7 +155,7 @@ class SNMPCIDRScanner {
 			const ip = this.IPList.pop();
 			if (ip) {
 				const session = snmp.createSession(ip, this.communityStr, {
-					timeout: Math.floor(Math.random() * 3000),
+					timeout: this.timeout,
 					port: this.port,
 				});
 				this.IPBuffer.push(session);
