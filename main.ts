@@ -11,7 +11,7 @@
 // After all required information is recieved from IP, session will be closed and
 // that session is removed from active sessions buffer where next IP address will start processing.  
 
-import { Observable, from } from 'rxjs';
+import { Observable, Subscriber, from } from 'rxjs';
 import { map, catchError } from 'rxjs/operators';
 import IPCIDR from 'ip-cidr';
 
@@ -25,39 +25,58 @@ interface IOIDs {
 
 class SNMPCIDRScanner {
 	
-	CIDR: string;
+	private _port: number;
+  private _timeout: number;
+	private _bufferSize: number;
+	private _communityStr: string;
+
 	IPTotal: number;
+	CIDR?: string;
 	IPList: string[];
 	IPBuffer: string[];
 	IPFound: string[];
-	bufferSize: number;
 	oids: IOIDs;
-	communityStr: string;
-	port: number;
-  timeout: number;
+	subscriber: Subscriber<any>;
 
-	constructor(CIDR: string, port?: number, bufferSize?: number, communityStr?: string) {
-		if (!IPCIDR.isValidCIDR(CIDR)) {
-			throw new Error('Invalid CIDR');
-		}
+	constructor(
+		port?: number, 
+		bufferSize?: number, 
+		timeout?: number, 
+		communityStr?: string
+	) {
+		this._communityStr = communityStr ?? 'public';
+		this._port = port ?? 161;
+    this._timeout = timeout ?? 2000;
+		this._bufferSize = bufferSize ?? 25;
 
-		this.CIDR = CIDR;
+		this.CIDR = undefined;
 		this.IPBuffer = [];
-		this.communityStr = communityStr ?? 'public';
 		this.oids = {
 			hostname: '1.3.6.1.2.1.1.5.0',
 			interfaces: '1.3.6.1.2.1.2.2',
 		};
-		this.port = port ?? 161;
-    this.timeout = 2000;
-		this.bufferSize = bufferSize ?? 25;
 		this.IPTotal = 0;
 		this.IPFound = [];
 		this.IPList = [];
+	}
 
-		this.getIPList();
-		this.startScan();
-		this.showProgress();
+	public get port(): number { return this._port; }
+	public get timeout(): number { return this._timeout; }
+	public get bufferSize(): number { return this._bufferSize; }
+	public get communityStr(): string { return this._communityStr; }
+
+	scan(CIDR: string): Observable<string> {
+		this.IPFound = [];
+		return new Observable((sub: Subscriber<any>) => {
+			this.subscriber = sub;
+			if (!IPCIDR.isValidCIDR(CIDR)) {
+				this.subscriber.error('Invalid CIDR');
+				this.subscriber.complete();
+			}
+			this.CIDR = CIDR;
+			this.getIPList();
+			this.startScan();
+		});
 	}
 
 	getIPList() {
@@ -70,7 +89,7 @@ class SNMPCIDRScanner {
 	}
 
 	getSNMPHostname(session: any): Observable<string> {
-		return new Observable((sub: any) => {
+		return new Observable((sub: Subscriber<any>) => {
 			session.get([this.oids.hostname], (err: any, varbinds: any) => {
 				if (err) {
 					// console.log(err, 'hostname err');
@@ -85,7 +104,7 @@ class SNMPCIDRScanner {
 	}
 
 	getSNMPInterfaces(session: any): Observable<string[]> {
-		return new Observable((sub: any) => {
+		return new Observable((sub: Subscriber<any>) => {
 			session.table(this.oids.interfaces, (err: any, table: any) => {
 				if (err) {
 					// console.log(err, 'if err');
@@ -109,7 +128,7 @@ class SNMPCIDRScanner {
 				...info,
 				ifs,
 			})),
-			catchError((err: any) => {
+			catchError(() => {
 				// -- ERROR while getting IF TABLE but we already have IP's hostname -> show
 				const { ip, hostname, session } = info;
 				const ipInfoStr = `${ip}; ${hostname};`;
@@ -129,7 +148,7 @@ class SNMPCIDRScanner {
 				ipInfoStr += ',';
 			}
 		})
-		// -- write found info into a console
+		// -- write found info into a array
 		this.saveIPInfo(ipInfoStr);
 		// -- session is done -> close
 		this.nextIP(session);
@@ -194,27 +213,36 @@ class SNMPCIDRScanner {
 		const ipLeft = this.IPTotal - (this.IPList.length + this.IPBuffer.length);
 		const ipLeftPercent = ((ipLeft / this.IPTotal) * 100).toFixed(2);
 		const endLine = end ? '\n' : '\r';
-		process.stdout.write(`Scanned IP Addresses: ${ipLeft} / ${this.IPTotal} (${ipLeftPercent}%)${endLine}`);
+		this.subscriber.next(`Scanned IP Addresses: ${ipLeft} / ${this.IPTotal} (${ipLeftPercent}%)${endLine}`);
+		// process.stdout.write(`Scanned IP Addresses: ${ipLeft} / ${this.IPTotal} (${ipLeftPercent}%)${endLine}`);
 	}
 
 	showFoundIPs() {
 		this.showProgress(true);
-		console.log('------------------------------------------');
-		console.log(`Found SNMP IPs for CIDR - ${this.CIDR}:`);
-		console.log('------------------------------------------');
+
+		this.subscriber.next('\n');
+		this.subscriber.next('------------------------------------------\n');
+		this.subscriber.next(`Found SNMP IPs for CIDR - ${this.CIDR}:\n`);
+		this.subscriber.next('------------------------------------------\n');
 		for(const [index, ipInfo] of this.IPFound.entries()) {
-			console.log(`${index + 1}: ${ipInfo}`);
+			this.subscriber.next(`${index + 1}: ${ipInfo}\n`);
 		}
-		process.exit();
+
+		this.subscriber.complete();
 	}
 }
 
 // -- main process
 const main = () => {
+	const scanner = new SNMPCIDRScanner();
 	console.log('Please enter CIDR you want to scan:');
 	process.stdin.on('data', (data: string) => {
-		const cidrAddress1 = `${data}`.trim();
-		const scanner1 = new SNMPCIDRScanner(cidrAddress1);
+		const cidrAddress = `${data}`.trim();
+		scanner.scan(cidrAddress).subscribe({
+			next: (line: string) => { process.stdout.write(line); },
+			complete: () => console.log('Please enter CIDR you want to scan:'),
+			error: (err: string) => console.log(err),
+		});
 	});
 }
 
